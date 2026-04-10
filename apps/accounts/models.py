@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 
@@ -60,3 +61,24 @@ class OTPRequest(TimeStampedModel):
 
     def __str__(self):
         return f"{self.mobile_number} - {self.code}"
+
+
+class PasswordResetRequest(TimeStampedModel):
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("completed", "Completed"),
+        ("expired", "Expired"),
+    ]
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="password_reset_requests")
+    mobile_number = models.CharField(max_length=20, db_index=True)
+    reset_token = models.CharField(max_length=64, unique=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
+    expires_at = models.DateTimeField()
+
+    def save(self, *args, **kwargs):
+        self.mobile_number = normalize_afghan_mobile(self.mobile_number)
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.mobile_number} - {self.status}"

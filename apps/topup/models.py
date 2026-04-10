@@ -37,3 +37,27 @@ class TopUpTransaction(TimeStampedModel, UUIDModel):
 
     def __str__(self):
         return f"{self.profile.unique_shop_id} - {self.mobile_number} - {self.amount}"
+
+
+class ScheduledTopup(TimeStampedModel, UUIDModel):
+    STATUS_CHOICES = [
+        ("scheduled", "Scheduled"),
+        ("sent", "Sent"),
+        ("cancelled", "Cancelled"),
+        ("failed", "Failed"),
+    ]
+
+    profile = models.ForeignKey(ShopkeeperProfile, on_delete=models.CASCADE, related_name="scheduled_topups")
+    mobile_number = models.CharField(max_length=20)
+    network = models.CharField(max_length=50, blank=True)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    schedule_for = models.DateTimeField()
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="scheduled")
+    note = models.CharField(max_length=255, blank=True)
+    last_transaction = models.ForeignKey(TopUpTransaction, null=True, blank=True, on_delete=models.SET_NULL, related_name="scheduled_entries")
+
+    class Meta:
+        ordering = ["schedule_for", "-created_at"]
+
+    def __str__(self):
+        return f"{self.profile.unique_shop_id} - {self.mobile_number} - {self.schedule_for}"

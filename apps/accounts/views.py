@@ -4,7 +4,9 @@ from rest_framework.views import APIView
 
 from .serializers import (
     ApplicationStatusSerializer,
+    ForgotPasswordRequestSerializer,
     RegistrationValidationSerializer,
+    ResetPasswordConfirmSerializer,
     ResellerLoginSerializer,
     ResellerRegistrationSerializer,
     UserSerializer,
@@ -59,6 +61,24 @@ class ApplicationStatusView(APIView):
 
     def post(self, request):
         serializer = ApplicationStatusSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        return Response(serializer.save(), status=status.HTTP_200_OK)
+
+
+class ForgotPasswordRequestView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        serializer = ForgotPasswordRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        return Response(serializer.save(), status=status.HTTP_200_OK)
+
+
+class ResetPasswordConfirmView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        serializer = ResetPasswordConfirmSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         return Response(serializer.save(), status=status.HTTP_200_OK)
 

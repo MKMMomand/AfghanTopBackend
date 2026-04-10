@@ -1,10 +1,16 @@
+import secrets
+from datetime import timedelta
+
 from django.contrib.auth import authenticate, get_user_model
 from django.db import transaction
+from django.utils import timezone
 from rest_framework import serializers
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.common.utils import normalize_afghan_mobile, validate_afghan_tazkira, is_valid_afghan_mobile
 from apps.shopkeepers.models import AccountAuditLog, ServiceAccess, ShopkeeperProfile
+
+from .models import PasswordResetRequest
 
 User = get_user_model()
 
@@ -51,7 +57,7 @@ class ResellerRegistrationSerializer(serializers.Serializer):
         if len(value) < 3:
             raise serializers.ValidationError("Shop name must be at least 3 characters.")
         if ShopkeeperProfile.objects.filter(shop_name__iexact=value).exists():
-            raise serializers.ValidationError("This shop name already exists.")
+            raise serializers.ValidationError("This shop name is already taken.")
         return value
 
     def validate_tazkira_number(self, value):
@@ -60,7 +66,7 @@ class ResellerRegistrationSerializer(serializers.Serializer):
         except ValueError as exc:
             raise serializers.ValidationError(str(exc))
         if ShopkeeperProfile.objects.filter(tazkira_number__iexact=value).exists():
-            raise serializers.ValidationError("This tazkira number is already registered.")
+            raise serializers.ValidationError("This tazkira number already exists in the system.")
         return value
 
     def validate(self, attrs):
@@ -68,7 +74,7 @@ class ResellerRegistrationSerializer(serializers.Serializer):
             raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
         if User.objects.filter(mobile_number=attrs["mobile_number"]).exists():
             raise serializers.ValidationError({
-                "mobile_number": "An account with this mobile number already exists. Please sign in instead."
+                "mobile_number": "This mobile number is already taken. Please sign in instead."
             })
         return attrs
 
@@ -171,23 +177,23 @@ class ResellerLoginSerializer(serializers.Serializer):
         user = User.objects.filter(mobile_number=mobile_number).first()
 
         if not user:
-            raise serializers.ValidationError({"mobile_number": "No agent account was found for this mobile number."})
+            raise serializers.ValidationError({"mobile_number": "No account was found for this mobile number."})
 
         user = authenticate(username=user.username, password=password)
         if not user:
             raise serializers.ValidationError({"password": "Incorrect password."})
 
         if not user.is_active:
-            raise serializers.ValidationError("This account is currently inactive.")
+            raise serializers.ValidationError({"detail": "This account is currently inactive."})
 
         if user.approval_status == "pending":
-            raise serializers.ValidationError("Your application is still pending approval. Please wait for admin approval.")
+            raise serializers.ValidationError({"detail": "Your application is still pending approval. Please wait for admin approval."})
         if user.approval_status == "rejected":
             note = user.approval_note or "Please contact support or submit a new application."
-            raise serializers.ValidationError(f"Your agent application was rejected. {note}")
+            raise serializers.ValidationError({"detail": f"Your agent application was rejected. {note}"})
         if user.approval_status == "suspended":
             note = user.approval_note or "Please contact support."
-            raise serializers.ValidationError(f"Your account is suspended. {note}")
+            raise serializers.ValidationError({"detail": f"Your account is suspended. {note}"})
 
         attrs["user"] = user
         return attrs
@@ -219,3 +225,81 @@ class ApplicationStatusSerializer(serializers.Serializer):
             "shop_name": getattr(profile, "shop_name", ""),
             "full_name": getattr(profile, "full_name", user.get_full_name()),
         }
+
+
+class ForgotPasswordRequestSerializer(serializers.Serializer):
+    mobile_number = serializers.CharField(max_length=20)
+
+    def validate_mobile_number(self, value):
+        value = normalize_afghan_mobile(value)
+        if not value:
+            raise serializers.ValidationError("Mobile number is required.")
+        return value
+
+    def save(self, **kwargs):
+        user = User.objects.filter(mobile_number=self.validated_data["mobile_number"]).first()
+        if not user:
+            raise serializers.ValidationError({"mobile_number": "No account was found for this mobile number."})
+        PasswordResetRequest.objects.filter(user=user, status="pending").update(status="expired")
+        token = secrets.token_urlsafe(24)
+        req = PasswordResetRequest.objects.create(
+            user=user,
+            mobile_number=user.mobile_number,
+            reset_token=token,
+            expires_at=timezone.now() + timedelta(minutes=20),
+        )
+        email = (user.email or "").strip()
+        masked_email = ""
+        if email and "@" in email:
+            name, domain = email.split("@", 1)
+            masked_email = f"{name[:2]}***@{domain}"
+        return {
+            "message": "Password reset request created.",
+            "mobile_number": user.mobile_number,
+            "reset_token": req.reset_token,
+            "expires_at": req.expires_at,
+            "delivery": "email" if email else "manual",
+            "masked_email": masked_email,
+            "hint": "Use the reset token on the next screen to set a new password."
+                if not email else
+                "A reset token has been prepared for this account. In production, this should be delivered by email or SMS.",
+        }
+
+
+class ResetPasswordConfirmSerializer(serializers.Serializer):
+    mobile_number = serializers.CharField(max_length=20)
+    reset_token = serializers.CharField(max_length=64)
+    new_password = serializers.CharField(write_only=True, min_length=6)
+    confirm_password = serializers.CharField(write_only=True, min_length=6)
+
+    def validate_mobile_number(self, value):
+        value = normalize_afghan_mobile(value)
+        if not value:
+            raise serializers.ValidationError("Mobile number is required.")
+        return value
+
+    def validate(self, attrs):
+        if attrs["new_password"] != attrs["confirm_password"]:
+            raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
+        req = PasswordResetRequest.objects.filter(
+            mobile_number=attrs["mobile_number"],
+            reset_token=attrs["reset_token"],
+            status="pending",
+        ).order_by("-created_at").first()
+        if not req:
+            raise serializers.ValidationError({"reset_token": "The reset token is invalid."})
+        if req.expires_at <= timezone.now():
+            req.status = "expired"
+            req.save(update_fields=["status"])
+            raise serializers.ValidationError({"reset_token": "The reset token has expired."})
+        attrs["request_obj"] = req
+        return attrs
+
+    def save(self, **kwargs):
+        req = self.validated_data["request_obj"]
+        user = req.user
+        user.set_password(self.validated_data["new_password"])
+        user.save(update_fields=["password"])
+        req.status = "completed"
+        req.save(update_fields=["status"])
+        return {"message": "Password has been reset successfully."}

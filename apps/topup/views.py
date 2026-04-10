@@ -6,8 +6,8 @@ from rest_framework.views import APIView
 from apps.accounts.permissions import IsApprovedReseller
 from apps.shopkeepers.models import ShopkeeperProfile
 
-from .models import FavoriteNumber, TopUpTransaction
-from .serializers import FavoriteNumberSerializer, TopUpCreateSerializer, TopUpTransactionSerializer
+from .models import FavoriteNumber, ScheduledTopup, TopUpTransaction
+from .serializers import FavoriteNumberSerializer, ScheduledTopupSerializer, TopUpCreateSerializer, TopUpTransactionSerializer
 from .services import execute_topup
 
 
@@ -34,6 +34,14 @@ class FavoriteNumberListCreateView(ShopkeeperProfileMixin, generics.ListCreateAP
         serializer.save(profile=self.get_profile())
 
 
+class FavoriteNumberDetailView(ShopkeeperProfileMixin, generics.RetrieveUpdateDestroyAPIView):
+    serializer_class = FavoriteNumberSerializer
+    permission_classes = [IsApprovedReseller]
+
+    def get_queryset(self):
+        return FavoriteNumber.objects.filter(profile=self.get_profile())
+
+
 class TransactionListView(ShopkeeperProfileMixin, generics.ListAPIView):
     serializer_class = TopUpTransactionSerializer
     permission_classes = [IsApprovedReseller]
@@ -46,8 +54,11 @@ class TransactionListView(ShopkeeperProfileMixin, generics.ListAPIView):
         amount = (self.request.query_params.get("amount") or "").strip()
         date = (self.request.query_params.get("date") or "").strip()
         time = (self.request.query_params.get("time") or "").strip()
+        mobile_number = (self.request.query_params.get("mobile_number") or "").strip()
         if q:
             qs = qs.filter(Q(mobile_number__icontains=q) | Q(provider_reference__icontains=q) | Q(message__icontains=q))
+        if mobile_number:
+            qs = qs.filter(mobile_number__icontains=mobile_number)
         if network:
             qs = qs.filter(network__iexact=network)
         if status_value:
@@ -73,3 +84,22 @@ class TransactionCreateView(ShopkeeperProfileMixin, APIView):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(TopUpTransactionSerializer(tx).data, status=status.HTTP_201_CREATED)
+
+
+class ScheduledTopupListCreateView(ShopkeeperProfileMixin, generics.ListCreateAPIView):
+    serializer_class = ScheduledTopupSerializer
+    permission_classes = [IsApprovedReseller]
+
+    def get_queryset(self):
+        return ScheduledTopup.objects.filter(profile=self.get_profile()).order_by('schedule_for', '-created_at')
+
+    def perform_create(self, serializer):
+        serializer.save(profile=self.get_profile())
+
+
+class ScheduledTopupDetailView(ShopkeeperProfileMixin, generics.RetrieveDestroyAPIView):
+    serializer_class = ScheduledTopupSerializer
+    permission_classes = [IsApprovedReseller]
+
+    def get_queryset(self):
+        return ScheduledTopup.objects.filter(profile=self.get_profile())
