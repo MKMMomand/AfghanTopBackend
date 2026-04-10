@@ -3,7 +3,7 @@ from django.db import transaction
 from rest_framework import serializers
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from apps.common.utils import normalize_afghan_mobile
+from apps.common.utils import normalize_afghan_mobile, validate_afghan_tazkira, is_valid_afghan_mobile
 from apps.shopkeepers.models import AccountAuditLog, ServiceAccess, ShopkeeperProfile
 
 User = get_user_model()
@@ -19,51 +19,48 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = [
-            "id",
-            "username",
-            "mobile_number",
-            "email",
-            "first_name",
-            "last_name",
-            "is_active",
-            "role",
-            "is_mobile_verified",
-            "approval_status",
-            "approval_note",
-            "is_reseller",
-            "shop_name",
+            "id", "username", "mobile_number", "email", "first_name", "last_name",
+            "is_active", "role", "is_mobile_verified", "approval_status", "approval_note",
+            "is_reseller", "shop_name",
         ]
         read_only_fields = fields
 
 
 class ResellerRegistrationSerializer(serializers.Serializer):
+    full_name = serializers.CharField(max_length=150)
     mobile_number = serializers.CharField(max_length=20)
+    tazkira_number = serializers.CharField(max_length=100)
+    shop_name = serializers.CharField(max_length=150)
     password = serializers.CharField(write_only=True, min_length=6, style={"input_type": "password"})
     confirm_password = serializers.CharField(write_only=True, min_length=6, style={"input_type": "password"})
-    full_name = serializers.CharField(max_length=150)
-    shop_name = serializers.CharField(max_length=150)
-    owner_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
-    email = serializers.EmailField(required=False, allow_blank=True)
-    address = serializers.CharField(required=False, allow_blank=True)
-    trade_license_number = serializers.CharField(max_length=100, required=False, allow_blank=True)
-    tazkira_number = serializers.CharField(max_length=100, required=False, allow_blank=True)
+
+    def validate_full_name(self, value):
+        value = value.strip()
+        if len(value.split()) < 2:
+            raise serializers.ValidationError("Please enter your full name.")
+        return value
 
     def validate_mobile_number(self, value):
         value = normalize_afghan_mobile(value)
-        if not value:
-            raise serializers.ValidationError("Mobile number is required.")
+        if not value or not is_valid_afghan_mobile(value):
+            raise serializers.ValidationError("Please enter a valid Afghan mobile number.")
         return value
 
     def validate_shop_name(self, value):
         value = value.strip()
-        if value and ShopkeeperProfile.objects.filter(shop_name__iexact=value).exists():
+        if len(value) < 3:
+            raise serializers.ValidationError("Shop name must be at least 3 characters.")
+        if ShopkeeperProfile.objects.filter(shop_name__iexact=value).exists():
             raise serializers.ValidationError("This shop name already exists.")
         return value
 
-    def validate_trade_license_number(self, value):
-        value = value.strip()
-        if value and ShopkeeperProfile.objects.filter(trade_license_number__iexact=value).exists():
-            raise serializers.ValidationError("This trade license number already exists.")
+    def validate_tazkira_number(self, value):
+        try:
+            value = validate_afghan_tazkira(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc))
+        if ShopkeeperProfile.objects.filter(tazkira_number__iexact=value).exists():
+            raise serializers.ValidationError("This tazkira number is already registered.")
         return value
 
     def validate(self, attrs):
@@ -79,7 +76,9 @@ class ResellerRegistrationSerializer(serializers.Serializer):
     def save(self, **kwargs):
         mobile_number = self.validated_data["mobile_number"]
         full_name = self.validated_data["full_name"].strip()
-        first_name, _, last_name = full_name.partition(" ")
+        name_parts = full_name.split()
+        first_name = name_parts[0]
+        last_name = " ".join(name_parts[1:])
 
         user = User.objects.create_user(
             username=mobile_number,
@@ -87,10 +86,9 @@ class ResellerRegistrationSerializer(serializers.Serializer):
             password=self.validated_data["password"],
             first_name=first_name,
             last_name=last_name,
-            email=self.validated_data.get("email", "").strip(),
             role="shopkeeper",
             approval_status="pending",
-            is_mobile_verified=True,
+            is_mobile_verified=False,
             is_active=True,
             is_reseller=True,
         )
@@ -99,13 +97,11 @@ class ResellerRegistrationSerializer(serializers.Serializer):
             user=user,
             unique_shop_id=f"SHOP-{user.id:06d}",
             full_name=full_name,
-            email=self.validated_data.get("email", "").strip(),
             shop_name=self.validated_data["shop_name"].strip(),
-            owner_name=(self.validated_data.get("owner_name") or full_name).strip(),
-            address=self.validated_data.get("address", "").strip(),
-            trade_license_number=self.validated_data.get("trade_license_number", "").strip(),
-            tazkira_number=self.validated_data.get("tazkira_number", "").strip(),
+            owner_name=full_name,
+            tazkira_number=self.validated_data["tazkira_number"],
             status="pending",
+            contact_number=mobile_number,
         )
 
         ServiceAccess.objects.create(
@@ -127,15 +123,15 @@ class ResellerRegistrationSerializer(serializers.Serializer):
             profile=profile,
             user=user,
             action="application_created",
-            note="New reseller application submitted.",
-            metadata={"mobile_number": mobile_number},
+            note="New agent application submitted.",
+            metadata={"mobile_number": mobile_number, "tazkira_number": profile.tazkira_number},
         )
 
         return user
 
 
 class RegistrationValidationSerializer(serializers.Serializer):
-    field = serializers.ChoiceField(choices=["mobile_number", "shop_name", "trade_license_number"])
+    field = serializers.ChoiceField(choices=["mobile_number", "shop_name", "tazkira_number"])
     value = serializers.CharField(max_length=150)
 
     def save(self, **kwargs):
@@ -145,29 +141,18 @@ class RegistrationValidationSerializer(serializers.Serializer):
         if field == "mobile_number":
             value = normalize_afghan_mobile(value)
             exists = User.objects.filter(mobile_number=value).exists() if value else False
-            return {
-                "field": field,
-                "normalized_value": value,
-                "available": not exists,
-                "message": "" if not exists else "This mobile number already exists.",
-            }
+            return {"field": field, "normalized_value": value, "available": not exists, "message": "" if not exists else "This mobile number already exists."}
 
         if field == "shop_name":
             exists = ShopkeeperProfile.objects.filter(shop_name__iexact=value).exists() if value else False
-            return {
-                "field": field,
-                "normalized_value": value,
-                "available": not exists,
-                "message": "" if not exists else "This shop name already exists.",
-            }
+            return {"field": field, "normalized_value": value, "available": not exists, "message": "" if not exists else "This shop name already exists."}
 
-        exists = ShopkeeperProfile.objects.filter(trade_license_number__iexact=value).exists() if value else False
-        return {
-            "field": field,
-            "normalized_value": value,
-            "available": not exists,
-            "message": "" if not exists else "This trade license number already exists.",
-        }
+        try:
+            normalized = validate_afghan_tazkira(value)
+        except ValueError as exc:
+            return {"field": field, "normalized_value": value, "available": False, "message": str(exc)}
+        exists = ShopkeeperProfile.objects.filter(tazkira_number__iexact=normalized).exists() if normalized else False
+        return {"field": field, "normalized_value": normalized, "available": not exists, "message": "" if not exists else "This tazkira number already exists."}
 
 
 class ResellerLoginSerializer(serializers.Serializer):
@@ -186,7 +171,7 @@ class ResellerLoginSerializer(serializers.Serializer):
         user = User.objects.filter(mobile_number=mobile_number).first()
 
         if not user:
-            raise serializers.ValidationError({"mobile_number": "No reseller account was found for this mobile number."})
+            raise serializers.ValidationError({"mobile_number": "No agent account was found for this mobile number."})
 
         user = authenticate(username=user.username, password=password)
         if not user:
@@ -196,15 +181,13 @@ class ResellerLoginSerializer(serializers.Serializer):
             raise serializers.ValidationError("This account is currently inactive.")
 
         if user.approval_status == "pending":
-            raise serializers.ValidationError(
-                "Your reseller application is still pending approval. Please wait for admin approval."
-            )
+            raise serializers.ValidationError("Your application is still pending approval. Please wait for admin approval.")
         if user.approval_status == "rejected":
             note = user.approval_note or "Please contact support or submit a new application."
-            raise serializers.ValidationError(f"Your reseller application was rejected. {note}")
+            raise serializers.ValidationError(f"Your agent application was rejected. {note}")
         if user.approval_status == "suspended":
             note = user.approval_note or "Please contact support."
-            raise serializers.ValidationError(f"Your reseller account is suspended. {note}")
+            raise serializers.ValidationError(f"Your account is suspended. {note}")
 
         attrs["user"] = user
         return attrs
@@ -212,11 +195,7 @@ class ResellerLoginSerializer(serializers.Serializer):
     def save(self, **kwargs):
         user = self.validated_data["user"]
         refresh = RefreshToken.for_user(user)
-        return {
-            "user": user,
-            "refresh": str(refresh),
-            "access": str(refresh.access_token),
-        }
+        return {"user": user, "refresh": str(refresh), "access": str(refresh.access_token)}
 
 
 class ApplicationStatusSerializer(serializers.Serializer):

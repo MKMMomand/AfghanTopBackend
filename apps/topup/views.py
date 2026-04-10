@@ -1,3 +1,4 @@
+from django.db.models import Q
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -20,7 +21,14 @@ class FavoriteNumberListCreateView(ShopkeeperProfileMixin, generics.ListCreateAP
     permission_classes = [IsApprovedReseller]
 
     def get_queryset(self):
-        return FavoriteNumber.objects.filter(profile=self.get_profile()).order_by("-created_at")
+        qs = FavoriteNumber.objects.filter(profile=self.get_profile()).order_by("category", "label", "-created_at")
+        category = self.request.query_params.get("category")
+        search = (self.request.query_params.get("search") or "").strip()
+        if category:
+            qs = qs.filter(category__iexact=category)
+        if search:
+            qs = qs.filter(Q(mobile_number__icontains=search) | Q(label__icontains=search) | Q(network__icontains=search) | Q(category__icontains=search))
+        return qs
 
     def perform_create(self, serializer):
         serializer.save(profile=self.get_profile())
@@ -29,12 +37,28 @@ class FavoriteNumberListCreateView(ShopkeeperProfileMixin, generics.ListCreateAP
 class TransactionListView(ShopkeeperProfileMixin, generics.ListAPIView):
     serializer_class = TopUpTransactionSerializer
     permission_classes = [IsApprovedReseller]
-    filterset_fields = ["status", "network", "provider"]
-    search_fields = ["mobile_number", "provider_reference"]
-    ordering_fields = ["created_at", "amount"]
 
     def get_queryset(self):
-        return TopUpTransaction.objects.filter(profile=self.get_profile()).order_by("-created_at")
+        qs = TopUpTransaction.objects.filter(profile=self.get_profile()).order_by("-created_at")
+        q = (self.request.query_params.get("q") or "").strip()
+        network = (self.request.query_params.get("network") or "").strip()
+        status_value = (self.request.query_params.get("status") or "").strip()
+        amount = (self.request.query_params.get("amount") or "").strip()
+        date = (self.request.query_params.get("date") or "").strip()
+        time = (self.request.query_params.get("time") or "").strip()
+        if q:
+            qs = qs.filter(Q(mobile_number__icontains=q) | Q(provider_reference__icontains=q) | Q(message__icontains=q))
+        if network:
+            qs = qs.filter(network__iexact=network)
+        if status_value:
+            qs = qs.filter(status__iexact=status_value)
+        if amount:
+            qs = qs.filter(amount=amount)
+        if date:
+            qs = qs.filter(created_at__date=date)
+        if time:
+            qs = qs.filter(created_at__time__hour=int(time.split(':')[0]))
+        return qs
 
 
 class TransactionCreateView(ShopkeeperProfileMixin, APIView):

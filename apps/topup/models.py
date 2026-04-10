@@ -1,15 +1,15 @@
-from decimal import Decimal
-from django.conf import settings
 from django.db import models
 from apps.common.models import TimeStampedModel, UUIDModel
 from apps.shopkeepers.models import ShopkeeperProfile
 from apps.providers.models import TopUpProvider
+
 
 class FavoriteNumber(TimeStampedModel):
     profile = models.ForeignKey(ShopkeeperProfile, on_delete=models.CASCADE, related_name="favorite_numbers")
     mobile_number = models.CharField(max_length=20)
     label = models.CharField(max_length=100, blank=True)
     network = models.CharField(max_length=50, blank=True)
+    category = models.CharField(max_length=60, blank=True)
 
     class Meta:
         unique_together = ("profile", "mobile_number")
@@ -17,13 +17,9 @@ class FavoriteNumber(TimeStampedModel):
     def __str__(self):
         return f"{self.profile.unique_shop_id} - {self.mobile_number}"
 
+
 class TopUpTransaction(TimeStampedModel, UUIDModel):
-    STATUS_CHOICES = [
-        ("pending", "Pending"),
-        ("success", "Success"),
-        ("failed", "Failed"),
-        ("reversed", "Reversed"),
-    ]
+    STATUS_CHOICES = [("pending", "Pending"), ("success", "Success"), ("failed", "Failed"), ("reversed", "Reversed")]
     profile = models.ForeignKey(ShopkeeperProfile, on_delete=models.CASCADE, related_name="transactions")
     mobile_number = models.CharField(max_length=20)
     network = models.CharField(max_length=50, blank=True)

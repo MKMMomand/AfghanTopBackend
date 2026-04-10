@@ -1,16 +1,19 @@
 from rest_framework import serializers
 from .models import CreditPeriod, ShopDocument, ShopkeeperProfile
 
+
 class ShopDocumentSerializer(serializers.ModelSerializer):
     class Meta:
         model = ShopDocument
         fields = ["id", "document_type", "file", "note", "created_at"]
+
 
 class CreditPeriodSerializer(serializers.ModelSerializer):
     class Meta:
         model = CreditPeriod
         fields = "__all__"
         read_only_fields = ["profile"]
+
 
 class ShopkeeperProfileSerializer(serializers.ModelSerializer):
     documents = ShopDocumentSerializer(many=True, read_only=True)
@@ -21,9 +24,11 @@ class ShopkeeperProfileSerializer(serializers.ModelSerializer):
             "id", "uuid", "unique_shop_id", "full_name", "email", "shop_name", "owner_name",
             "address", "trade_license_number", "tazkira_number", "status", "is_kyc_verified",
             "credit_limit", "available_limit", "outstanding_balance", "low_limit_threshold",
+            "contact_number", "directions", "top_selling_items", "service_tags", "shop_description",
             "documents",
         ]
         read_only_fields = ["unique_shop_id", "status", "is_kyc_verified"]
+
 
 class DashboardSummarySerializer(serializers.Serializer):
     shopkeeper = ShopkeeperProfileSerializer()

@@ -8,12 +8,7 @@ from apps.common.models import TimeStampedModel, UUIDModel
 
 
 class ShopkeeperProfile(TimeStampedModel, UUIDModel):
-    STATUS_CHOICES = [
-        ("pending", "Pending"),
-        ("active", "Active"),
-        ("suspended", "Suspended"),
-        ("blocked", "Blocked"),
-    ]
+    STATUS_CHOICES = [("pending", "Pending"), ("active", "Active"), ("suspended", "Suspended"), ("blocked", "Blocked")]
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="shopkeeper_profile")
     unique_shop_id = models.CharField(max_length=30, unique=True)
     full_name = models.CharField(max_length=150, blank=True)
@@ -35,16 +30,18 @@ class ShopkeeperProfile(TimeStampedModel, UUIDModel):
     manual_hold_reason = models.CharField(max_length=255, blank=True)
     internal_note = models.TextField(blank=True)
 
+    contact_number = models.CharField(max_length=20, blank=True)
+    directions = models.TextField(blank=True)
+    top_selling_items = models.TextField(blank=True)
+    service_tags = models.TextField(blank=True)
+    shop_description = models.TextField(blank=True)
+
     def __str__(self):
         return f"{self.unique_shop_id} - {self.shop_name or self.user.mobile_number}"
 
 
 class ShopDocument(TimeStampedModel):
-    DOCUMENT_TYPES = [
-        ("tazkira", "Tazkira"),
-        ("license", "Trade License"),
-        ("other", "Other"),
-    ]
+    DOCUMENT_TYPES = [("tazkira", "Tazkira"), ("license", "Trade License"), ("other", "Other")]
     profile = models.ForeignKey(ShopkeeperProfile, on_delete=models.CASCADE, related_name="documents")
     document_type = models.CharField(max_length=20, choices=DOCUMENT_TYPES)
     file = models.FileField(upload_to="shop_documents/")
@@ -55,11 +52,7 @@ class ShopDocument(TimeStampedModel):
 
 
 class CreditPeriod(TimeStampedModel):
-    STATUS_CHOICES = [
-        ("open", "Open"),
-        ("closed", "Closed"),
-        ("overdue", "Overdue"),
-    ]
+    STATUS_CHOICES = [("open", "Open"), ("closed", "Closed"), ("overdue", "Overdue")]
     profile = models.ForeignKey(ShopkeeperProfile, on_delete=models.CASCADE, related_name="credit_periods")
     title = models.CharField(max_length=120)
     opening_limit = models.DecimalField(max_digits=12, decimal_places=2)
@@ -77,14 +70,7 @@ class CreditPeriod(TimeStampedModel):
 
 
 class ServiceAccess(TimeStampedModel):
-    SERVICE_CHOICES = [
-        ("topup", "Top-up"),
-        ("data_bundle", "Data Bundle"),
-        ("bill_payment", "Bill Payment"),
-        ("money_transfer", "Money Transfer"),
-        ("sim_services", "SIM Services"),
-        ("other", "Other"),
-    ]
+    SERVICE_CHOICES = [("topup", "Top-up"), ("data_bundle", "Data Bundle"), ("bill_payment", "Bill Payment"), ("money_transfer", "Money Transfer"), ("sim_services", "SIM Services"), ("other", "Other")]
 
     profile = models.ForeignKey(ShopkeeperProfile, on_delete=models.CASCADE, related_name="service_accesses")
     service_code = models.CharField(max_length=30, choices=SERVICE_CHOICES, default="topup")
@@ -129,20 +115,7 @@ class ServiceAccess(TimeStampedModel):
 
 
 class AccountAuditLog(TimeStampedModel):
-    ACTION_CHOICES = [
-        ("application_created", "Application Created"),
-        ("application_approved", "Application Approved"),
-        ("application_rejected", "Application Rejected"),
-        ("profile_activated", "Profile Activated"),
-        ("service_enabled", "Service Enabled"),
-        ("service_disabled", "Service Disabled"),
-        ("credit_enabled", "Credit Enabled"),
-        ("credit_locked", "Credit Locked"),
-        ("credit_unlocked", "Credit Unlocked"),
-        ("limit_changed", "Limit Changed"),
-        ("payment_recorded", "Payment Recorded"),
-        ("overdue_marked", "Overdue Marked"),
-    ]
+    ACTION_CHOICES = [("application_created", "Application Created"), ("application_approved", "Application Approved"), ("application_rejected", "Application Rejected"), ("profile_activated", "Profile Activated"), ("service_enabled", "Service Enabled"), ("service_disabled", "Service Disabled"), ("credit_enabled", "Credit Enabled"), ("credit_locked", "Credit Locked"), ("credit_unlocked", "Credit Unlocked"), ("limit_changed", "Limit Changed"), ("payment_recorded", "Payment Recorded"), ("overdue_marked", "Overdue Marked")]
 
     profile = models.ForeignKey(ShopkeeperProfile, on_delete=models.CASCADE, related_name="audit_logs")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="account_audit_logs")
