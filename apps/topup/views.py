@@ -6,6 +6,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.accounts.permissions import IsApprovedReseller
+from apps.providers.models import TopUpProvider
 from apps.shopkeepers.models import ShopkeeperProfile
 
 from .models import BulkTopupBatch, CustomerReminder, FavoriteNumber, ScheduledTopup, TopUpTransaction
@@ -19,7 +20,13 @@ from .serializers import (
     TopUpCreateSerializer,
     TopUpTransactionSerializer,
 )
-from .services import execute_bulk_topup, execute_topup, process_due_scheduled_topups
+from .services import (
+    execute_bulk_topup,
+    execute_topup,
+    get_provider_wallet_balance,
+    process_due_scheduled_topups,
+    refresh_transaction_status,
+)
 
 
 class ShopkeeperProfileMixin:
@@ -94,7 +101,32 @@ class TransactionCreateView(ShopkeeperProfileMixin, APIView):
             tx = execute_topup(profile=profile, **serializer.validated_data)
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(TopUpTransactionSerializer(tx).data, status=status.HTTP_201_CREATED)
+        http_status = status.HTTP_202_ACCEPTED if tx.status == "pending" else status.HTTP_201_CREATED
+        return Response(TopUpTransactionSerializer(tx).data, status=http_status)
+
+
+class TransactionRefreshStatusView(ShopkeeperProfileMixin, APIView):
+    permission_classes = [IsApprovedReseller]
+
+    def post(self, request, pk: int):
+        tx = TopUpTransaction.objects.filter(profile=self.get_profile(), pk=pk).select_related("provider").first()
+        if not tx:
+            return Response({"detail": "Transaction not found."}, status=status.HTTP_404_NOT_FOUND)
+        tx = refresh_transaction_status(tx)
+        return Response(TopUpTransactionSerializer(tx).data)
+
+
+class ProviderWalletBalanceView(APIView):
+    permission_classes = [IsApprovedReseller]
+
+    def get(self, request):
+        provider_code = (request.query_params.get("provider") or "sendaf").strip().lower()
+        provider = TopUpProvider.objects.filter(code__iexact=provider_code, status="active").first()
+        if not provider:
+            return Response({"detail": "Active provider not found."}, status=status.HTTP_404_NOT_FOUND)
+        result = get_provider_wallet_balance(provider)
+        http_status = status.HTTP_200_OK if result.get("status") == "success" else status.HTTP_502_BAD_GATEWAY
+        return Response(result, status=http_status)
 
 
 class ScheduledTopupListCreateView(ShopkeeperProfileMixin, generics.ListCreateAPIView):

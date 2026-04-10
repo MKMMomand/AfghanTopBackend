@@ -7,7 +7,7 @@ from django.utils import timezone
 
 from apps.topup.models import TopUpTransaction
 
-from .adapters import GenericHttpProviderAdapter, MockProviderAdapter
+from .adapters import GenericHttpProviderAdapter, MockProviderAdapter, SendAfProviderAdapter
 from .models import TopUpProvider
 
 
@@ -28,9 +28,16 @@ class ProviderRouter:
         return None
 
     def fallback_providers(self, primary, network: str | None = None):
-        return [provider for provider in self.available_providers(network) if provider.id != getattr(primary, 'id', None) and self._within_daily_cap(provider)]
+        return [
+            provider
+            for provider in self.available_providers(network)
+            if provider.id != getattr(primary, "id", None) and self._within_daily_cap(provider)
+        ]
 
     def get_adapter(self, provider):
+        code = (provider.code or "").strip().lower()
+        if code == "sendaf":
+            return SendAfProviderAdapter(provider)
         if provider.base_url:
             return GenericHttpProviderAdapter(provider)
         return MockProviderAdapter(provider)
@@ -39,5 +46,10 @@ class ProviderRouter:
         if not provider.daily_cap or provider.daily_cap <= 0:
             return True
         start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        used = TopUpTransaction.objects.filter(provider=provider, status="success", created_at__gte=start).aggregate(total=Sum("amount")).get("total") or Decimal("0")
+        used = (
+            TopUpTransaction.objects.filter(provider=provider, status="success", created_at__gte=start)
+            .aggregate(total=Sum("amount"))
+            .get("total")
+            or Decimal("0")
+        )
         return used < provider.daily_cap

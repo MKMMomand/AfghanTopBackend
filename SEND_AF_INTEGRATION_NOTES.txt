@@ -1,0 +1,32 @@
+Send.af backend integration added.
+
+What was added:
+- Provider adapter for Send.af top-up, wallet balance, and order status
+- Provider router support for provider code: sendaf
+- Transaction refresh-status endpoint for pending provider orders
+- Provider wallet balance endpoint
+- Generic amount validation moved away from hardcoded 25 AFN so provider rules can control min/max
+- setup_sendaf_provider management command
+- Render env vars added for Send.af
+
+Important:
+- Send.af currently enforces 50 to 4000 AFN through this integration.
+- Because Send.af top-up result code 1 means "posted and processing", this backend stores that as PENDING and exposes refresh-status so frontend can poll or refresh it.
+- Only confirmed success settles the agent credit debit.
+
+Recommended Render setup:
+1. Set SEND_AF_TOKEN in Render environment
+2. Deploy backend
+3. Run:
+   python manage.py setup_sendaf_provider
+4. Restart the service
+
+Useful endpoints:
+- POST /api/v1/topup/transactions/create/
+- POST /api/v1/topup/transactions/<id>/refresh-status/
+- GET  /api/v1/topup/provider/wallet-balance/?provider=sendaf
+
+Frontend changes needed next:
+- Allow pending transaction state in top-up success flow
+- Update min top-up UI for Send.af-backed top-up to 50 AFN
+- Add refresh/retry logic for pending provider orders

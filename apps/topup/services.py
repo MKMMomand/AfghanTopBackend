@@ -1,12 +1,14 @@
 from calendar import monthrange
 from datetime import timedelta
 from decimal import Decimal
+
 from django.db import transaction
 from django.utils import timezone
 
 from apps.providers.services import ProviderRouter
 from apps.settlements.services import record_topup_debit
 from apps.shopkeepers.models import AccountAuditLog, ServiceAccess
+
 from .models import BulkTopupBatch, BulkTopupItem, ScheduledTopup, TopUpTransaction
 
 
@@ -32,6 +34,16 @@ def detect_network(mobile_number: str) -> str:
 def _get_topup_access(profile):
     access, _ = ServiceAccess.objects.get_or_create(profile=profile, service_code="topup")
     return access
+
+
+def _validate_provider_rules(provider, amount: Decimal):
+    cfg = provider.extra_config or {}
+    min_amount = Decimal(str(cfg.get("min_amount", "0") or "0"))
+    max_amount = Decimal(str(cfg.get("max_amount", "0") or "0"))
+    if min_amount and amount < min_amount:
+        raise ValueError(f"Minimum top-up amount for {provider.name} is {int(min_amount)} AFN.")
+    if max_amount and amount > max_amount:
+        raise ValueError(f"Maximum top-up amount for {provider.name} is {int(max_amount)} AFN.")
 
 
 @transaction.atomic
@@ -64,12 +76,15 @@ def execute_topup(profile, mobile_number, amount, network=None):
     last_response = None
 
     for selected_provider in providers_to_try:
+        _validate_provider_rules(selected_provider, amount)
         adapter = router.get_adapter(selected_provider)
         response = adapter.topup(mobile_number=mobile_number, amount=amount, network=network)
         last_response = (selected_provider, response)
-        if response.get("status") == "success":
-            commission_percent = selected_provider.commission_percent
-            commission_amount = (amount * commission_percent) / Decimal("100")
+        status_value = response.get("status")
+
+        if status_value in {"success", "pending"}:
+            commission_percent = selected_provider.commission_percent if status_value == "success" else Decimal("0")
+            commission_amount = (amount * commission_percent) / Decimal("100") if status_value == "success" else Decimal("0")
             tx = TopUpTransaction.objects.create(
                 profile=profile,
                 mobile_number=mobile_number,
@@ -79,22 +94,23 @@ def execute_topup(profile, mobile_number, amount, network=None):
                 commission_amount=commission_amount,
                 provider=selected_provider,
                 provider_reference=response.get("provider_reference", ""),
-                status="success",
+                status="success" if status_value == "success" else "pending",
                 message=response.get("message", ""),
             )
-            record_topup_debit(profile, tx, service_code="topup")
-            access.used_credit = (access.used_credit or Decimal("0")) + amount
-            access.next_due_date = access.next_due_date or (timezone.now() + timedelta(days=access.due_days or 7))
-            access.recalculate_balances()
-            access.save()
-            AccountAuditLog.objects.create(
-                profile=profile,
-                user=profile.user,
-                service_code="topup",
-                action="limit_changed",
-                note=f"Top-up debit of {amount} applied to service credit.",
-                metadata={"mobile_number": mobile_number, "transaction_uuid": str(tx.uuid)},
-            )
+            if status_value == "success":
+                record_topup_debit(profile, tx, service_code="topup")
+                access.used_credit = (access.used_credit or Decimal("0")) + amount
+                access.next_due_date = access.next_due_date or (timezone.now() + timedelta(days=access.due_days or 7))
+                access.recalculate_balances()
+                access.save()
+                AccountAuditLog.objects.create(
+                    profile=profile,
+                    user=profile.user,
+                    service_code="topup",
+                    action="limit_changed",
+                    note=f"Top-up debit of {amount} applied to service credit.",
+                    metadata={"mobile_number": mobile_number, "transaction_uuid": str(tx.uuid)},
+                )
             return tx
 
     selected_provider, response = last_response
@@ -110,6 +126,54 @@ def execute_topup(profile, mobile_number, amount, network=None):
         status="failed",
         message=response.get("message", "Top-up failed."),
     )
+
+
+@transaction.atomic
+def refresh_transaction_status(tx: TopUpTransaction):
+    if tx.status != "pending" or not tx.provider or not tx.provider_reference:
+        return tx
+    router = ProviderRouter()
+    adapter = router.get_adapter(tx.provider)
+    result = adapter.order_status(tx.provider_reference)
+    if result.get("status") == "success":
+        profile = tx.profile
+        access = _get_topup_access(profile)
+        access.recalculate_balances()
+        access.save()
+        if access.available_credit < tx.amount:
+            tx.message = "Top-up provider marked the order successful, but available credit is not enough to settle it. Please review manually."
+            tx.save(update_fields=["message", "updated_at"])
+            return tx
+        tx.status = "success"
+        tx.message = result.get("message", tx.message)
+        tx.save(update_fields=["status", "message", "updated_at"])
+        record_topup_debit(profile, tx, service_code="topup")
+        access.used_credit = (access.used_credit or Decimal("0")) + tx.amount
+        access.next_due_date = access.next_due_date or (timezone.now() + timedelta(days=access.due_days or 7))
+        access.recalculate_balances()
+        access.save()
+        AccountAuditLog.objects.create(
+            profile=profile,
+            user=profile.user,
+            service_code="topup",
+            action="limit_changed",
+            note=f"Pending top-up debit of {tx.amount} settled after provider confirmation.",
+            metadata={"mobile_number": tx.mobile_number, "transaction_uuid": str(tx.uuid), "provider_reference": tx.provider_reference},
+        )
+    elif result.get("status") == "failed":
+        tx.status = "failed"
+        tx.message = result.get("message", tx.message)
+        tx.save(update_fields=["status", "message", "updated_at"])
+    else:
+        tx.message = result.get("message", tx.message)
+        tx.save(update_fields=["message", "updated_at"])
+    return tx
+
+
+def get_provider_wallet_balance(provider):
+    router = ProviderRouter()
+    adapter = router.get_adapter(provider)
+    return adapter.wallet_balance()
 
 
 def _advance_next_run(entry: ScheduledTopup):
@@ -148,13 +212,13 @@ def process_due_scheduled_topups(limit=50, profile=None):
             )
             entry.last_transaction = tx
             entry.last_run_at = now
-            if tx.status == "success":
-                entry.status = "sent"
+            if tx.status in {"success", "pending"}:
+                entry.status = "sent" if tx.status == "success" else "scheduled"
                 entry.failure_reason = ""
                 next_run = _advance_next_run(entry)
                 if next_run is None:
-                    entry.is_active = False
-                    entry.next_run_at = None
+                    entry.is_active = tx.status == "pending"
+                    entry.next_run_at = None if tx.status == "success" else entry.schedule_for
                 else:
                     entry.status = "scheduled"
                     entry.next_run_at = next_run
@@ -191,7 +255,7 @@ def execute_bulk_topup(profile, items, title="", note=""):
                 amount=item["amount"],
                 network=item.get("network") or None,
             )
-            item_status = "success" if tx.status == "success" else "failed"
+            item_status = "success" if tx.status in {"success", "pending"} else "failed"
             if item_status == "success":
                 success_count += 1
             else:

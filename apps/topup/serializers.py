@@ -44,8 +44,8 @@ class TopUpCreateSerializer(serializers.Serializer):
         return normalize_afghan_mobile(value)
 
     def validate_amount(self, value):
-        if value < 25:
-            raise serializers.ValidationError("Minimum top-up amount is 25 AFN.")
+        if value <= 0:
+            raise serializers.ValidationError("Amount must be greater than 0 AFN.")
         return value
 
 
@@ -62,8 +62,8 @@ class ScheduledTopupSerializer(serializers.ModelSerializer):
         return normalize_afghan_mobile(value)
 
     def validate_amount(self, value):
-        if value < 25:
-            raise serializers.ValidationError("Minimum top-up amount is 25 AFN.")
+        if value <= 0:
+            raise serializers.ValidationError("Amount must be greater than 0 AFN.")
         return value
 
     def create(self, validated_data):
@@ -87,8 +87,8 @@ class BulkTopupItemInputSerializer(serializers.Serializer):
         return normalize_afghan_mobile(value)
 
     def validate_amount(self, value):
-        if value < Decimal("25"):
-            raise serializers.ValidationError("Minimum top-up amount is 25 AFN.")
+        if value <= Decimal("0"):
+            raise serializers.ValidationError("Amount must be greater than 0 AFN.")
         return value
 
 
@@ -134,6 +134,6 @@ class CustomerReminderSerializer(serializers.ModelSerializer):
         return normalize_afghan_mobile(value)
 
     def validate_preferred_amount(self, value):
-        if value < Decimal("25"):
-            raise serializers.ValidationError("Minimum top-up amount is 25 AFN.")
+        if value <= Decimal("0"):
+            raise serializers.ValidationError("Amount must be greater than 0 AFN.")
         return value

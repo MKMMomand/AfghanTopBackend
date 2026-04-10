@@ -27,6 +27,16 @@ services:
         fromDatabase:
           name: afghan-top-db
           property: connectionString
+      - key: SEND_AF_TOKEN
+        sync: false
+      - key: SEND_AF_BASE_URL
+        value: "https://www.send.af/api"
+      - key: SEND_AF_TIMEOUT_SECONDS
+        value: "20"
+      - key: SEND_AF_MIN_AMOUNT
+        value: "50"
+      - key: SEND_AF_MAX_AMOUNT
+        value: "4000"
 
 databases:
   - name: afghan-top-db
