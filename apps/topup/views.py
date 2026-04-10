@@ -1,14 +1,25 @@
 from django.db.models import Q
+from django.utils import timezone
 from rest_framework import generics, status
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.accounts.permissions import IsApprovedReseller
 from apps.shopkeepers.models import ShopkeeperProfile
 
-from .models import FavoriteNumber, ScheduledTopup, TopUpTransaction
-from .serializers import FavoriteNumberSerializer, ScheduledTopupSerializer, TopUpCreateSerializer, TopUpTransactionSerializer
-from .services import execute_topup
+from .models import BulkTopupBatch, CustomerReminder, FavoriteNumber, ScheduledTopup, TopUpTransaction
+from .serializers import (
+    BulkTopupBatchSerializer,
+    BulkTopupCreateSerializer,
+    CustomerReminderSerializer,
+    FavoriteNumberSerializer,
+    ScheduledTopupSerializer,
+    ScheduledTopupUpdateSerializer,
+    TopUpCreateSerializer,
+    TopUpTransactionSerializer,
+)
+from .services import execute_bulk_topup, execute_topup, process_due_scheduled_topups
 
 
 class ShopkeeperProfileMixin:
@@ -91,15 +102,85 @@ class ScheduledTopupListCreateView(ShopkeeperProfileMixin, generics.ListCreateAP
     permission_classes = [IsApprovedReseller]
 
     def get_queryset(self):
-        return ScheduledTopup.objects.filter(profile=self.get_profile()).order_by('schedule_for', '-created_at')
+        qs = ScheduledTopup.objects.filter(profile=self.get_profile()).order_by('next_run_at', 'schedule_for', '-created_at')
+        status_value = (self.request.query_params.get("status") or "").strip()
+        active_only = (self.request.query_params.get("active_only") or "").strip().lower()
+        if status_value:
+            qs = qs.filter(status__iexact=status_value)
+        if active_only in {"1", "true", "yes"}:
+            qs = qs.filter(is_active=True)
+        return qs
 
     def perform_create(self, serializer):
         serializer.save(profile=self.get_profile())
 
 
-class ScheduledTopupDetailView(ShopkeeperProfileMixin, generics.RetrieveDestroyAPIView):
-    serializer_class = ScheduledTopupSerializer
+class ScheduledTopupDetailView(ShopkeeperProfileMixin, generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsApprovedReseller]
 
     def get_queryset(self):
         return ScheduledTopup.objects.filter(profile=self.get_profile())
+
+    def get_serializer_class(self):
+        if self.request.method in {"PATCH", "PUT"}:
+            return ScheduledTopupUpdateSerializer
+        return ScheduledTopupSerializer
+
+
+class BulkTopupBatchListView(ShopkeeperProfileMixin, generics.ListAPIView):
+    serializer_class = BulkTopupBatchSerializer
+    permission_classes = [IsApprovedReseller]
+
+    def get_queryset(self):
+        return BulkTopupBatch.objects.filter(profile=self.get_profile()).prefetch_related("items").order_by("-created_at")
+
+
+class BulkTopupCreateView(ShopkeeperProfileMixin, APIView):
+    permission_classes = [IsApprovedReseller]
+
+    def post(self, request):
+        serializer = BulkTopupCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        profile = self.get_profile()
+        batch = execute_bulk_topup(
+            profile=profile,
+            items=serializer.validated_data["items"],
+            title=serializer.validated_data.get("title", ""),
+            note=serializer.validated_data.get("note", ""),
+        )
+        batch.refresh_from_db()
+        return Response(BulkTopupBatchSerializer(batch).data, status=status.HTTP_201_CREATED)
+
+
+class CustomerReminderListCreateView(ShopkeeperProfileMixin, generics.ListCreateAPIView):
+    serializer_class = CustomerReminderSerializer
+    permission_classes = [IsApprovedReseller]
+
+    def get_queryset(self):
+        qs = CustomerReminder.objects.filter(profile=self.get_profile()).order_by("reminder_at", "-created_at")
+        status_value = (self.request.query_params.get("status") or "").strip()
+        due_only = (self.request.query_params.get("due_only") or "").strip().lower()
+        if status_value:
+            qs = qs.filter(status__iexact=status_value)
+        if due_only in {"1", "true", "yes"}:
+            qs = qs.filter(status="pending", reminder_at__lte=timezone.now())
+        return qs
+
+    def perform_create(self, serializer):
+        serializer.save(profile=self.get_profile())
+
+
+class CustomerReminderDetailView(ShopkeeperProfileMixin, generics.RetrieveUpdateDestroyAPIView):
+    serializer_class = CustomerReminderSerializer
+    permission_classes = [IsApprovedReseller]
+
+    def get_queryset(self):
+        return CustomerReminder.objects.filter(profile=self.get_profile())
+
+
+@api_view(["POST"])
+@permission_classes([IsApprovedReseller])
+def process_my_due_scheduled_view(request):
+    profile = ShopkeeperProfile.objects.get(user=request.user)
+    processed = process_due_scheduled_topups(limit=100, profile=profile)
+    return Response({"processed": processed})

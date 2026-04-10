@@ -1,11 +1,16 @@
 from django.urls import path
 from .views import (
+    BulkTopupBatchListView,
+    BulkTopupCreateView,
+    CustomerReminderDetailView,
+    CustomerReminderListCreateView,
     FavoriteNumberDetailView,
     FavoriteNumberListCreateView,
     ScheduledTopupDetailView,
     ScheduledTopupListCreateView,
     TransactionCreateView,
     TransactionListView,
+    process_my_due_scheduled_view,
 )
 
 urlpatterns = [
@@ -15,4 +20,9 @@ urlpatterns = [
     path("transactions/create/", TransactionCreateView.as_view(), name="transaction-create"),
     path("scheduled/", ScheduledTopupListCreateView.as_view(), name="scheduled-topup-list-create"),
     path("scheduled/<int:pk>/", ScheduledTopupDetailView.as_view(), name="scheduled-topup-detail"),
+    path("scheduled/process-due/", process_my_due_scheduled_view, name="scheduled-process-due"),
+    path("bulk/", BulkTopupBatchListView.as_view(), name="bulk-topup-list"),
+    path("bulk/create/", BulkTopupCreateView.as_view(), name="bulk-topup-create"),
+    path("reminders/", CustomerReminderListCreateView.as_view(), name="customer-reminder-list-create"),
+    path("reminders/<int:pk>/", CustomerReminderDetailView.as_view(), name="customer-reminder-detail"),
 ]
