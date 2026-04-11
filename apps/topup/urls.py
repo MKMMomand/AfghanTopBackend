@@ -3,6 +3,7 @@ from .views import (
     BulkTopupBatchListView,
     BulkTopupCreateView,
     CustomerReminderDetailView,
+    AiSuggestionsView,
     CustomerReminderListCreateView,
     FavoriteNumberDetailView,
     FavoriteNumberListCreateView,
@@ -16,6 +17,7 @@ from .views import (
 )
 
 urlpatterns = [
+    path("ai/suggestions/", AiSuggestionsView.as_view(), name="ai-suggestions"),
     path("favorites/", FavoriteNumberListCreateView.as_view(), name="favorite-number-list-create"),
     path("favorites/<int:pk>/", FavoriteNumberDetailView.as_view(), name="favorite-number-detail"),
     path("transactions/", TransactionListView.as_view(), name="transaction-list"),

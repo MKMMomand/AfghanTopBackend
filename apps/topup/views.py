@@ -216,3 +216,101 @@ def process_my_due_scheduled_view(request):
     profile = ShopkeeperProfile.objects.get(user=request.user)
     processed = process_due_scheduled_topups(limit=100, profile=profile)
     return Response({"processed": processed})
+
+
+class AiSuggestionsView(ShopkeeperProfileMixin, APIView):
+    permission_classes = [IsApprovedReseller]
+
+    def get(self, request):
+        profile = self.get_profile()
+        transactions = list(TopUpTransaction.objects.filter(profile=profile).order_by('-created_at')[:80])
+        favorites = list(FavoriteNumber.objects.filter(profile=profile).order_by('category', 'label', '-created_at')[:20])
+        reminders = list(CustomerReminder.objects.filter(profile=profile).order_by('reminder_at', '-created_at')[:20])
+
+        cards = []
+
+        if transactions:
+            number_frequency = {}
+            amount_frequency = {}
+            network_frequency = {}
+            pending_tx = None
+            for tx in transactions:
+                if tx.mobile_number:
+                    number_frequency[tx.mobile_number] = number_frequency.get(tx.mobile_number, 0) + 1
+                amount_key = str(int(tx.amount)) if float(tx.amount).is_integer() else str(tx.amount)
+                amount_frequency[amount_key] = amount_frequency.get(amount_key, 0) + 1
+                if tx.network:
+                    network_frequency[tx.network] = network_frequency.get(tx.network, 0) + 1
+                if pending_tx is None and 'pending' in (tx.status or '').lower():
+                    pending_tx = tx
+
+            def top_key(values):
+                return sorted(values.items(), key=lambda x: x[1], reverse=True)[0][0] if values else None
+
+            top_number = top_key(number_frequency)
+            top_amount = top_key(amount_frequency)
+            top_network = top_key(network_frequency)
+
+            if top_number and top_amount:
+                cards.append({
+                    'type': 'repeat_topup',
+                    'title': 'Repeat best selling top up',
+                    'message': f'{top_number} appears most often in your live records. Recharge {top_amount} AFN{f" on {top_network}" if top_network else ""} with one tap.',
+                    'action_label': 'Top up now',
+                    'mobile_number': top_number,
+                    'amount': top_amount,
+                    'network': top_network,
+                    'confidence': 0.95,
+                    'source': 'backend',
+                })
+
+            if pending_tx:
+                cards.append({
+                    'type': 'review_pending',
+                    'title': 'Pending transaction needs review',
+                    'message': f'{pending_tx.mobile_number} is still marked {pending_tx.status}. Review it before sending another recharge.',
+                    'action_label': 'Open transactions',
+                    'route': 'transactions',
+                    'confidence': 0.9,
+                    'source': 'backend',
+                })
+
+        due_reminder = next((r for r in reminders if (r.status or '').lower() == 'pending' and r.reminder_at and r.reminder_at <= timezone.now()), None)
+        if due_reminder:
+            cards.append({
+                'type': 'due_reminder',
+                'title': 'Reminder is due now',
+                'message': f'{due_reminder.label or due_reminder.mobile_number} is due for {int(due_reminder.preferred_amount)} AFN on {due_reminder.network}.',
+                'action_label': 'Use reminder',
+                'mobile_number': due_reminder.mobile_number,
+                'amount': str(int(due_reminder.preferred_amount)),
+                'network': due_reminder.network,
+                'confidence': 0.92,
+                'source': 'backend',
+            })
+
+        if favorites:
+            fav = favorites[0]
+            cards.append({
+                'type': 'favorite_shortcut',
+                'title': 'Favorite customer shortcut',
+                'message': f'{fav.label or fav.mobile_number} is ready as a fast recharge shortcut from your live favorites.',
+                'action_label': 'Open favorite',
+                'mobile_number': fav.mobile_number,
+                'network': fav.network,
+                'confidence': 0.84,
+                'source': 'backend',
+            })
+
+        if len(cards) < 4:
+            cards.append({
+                'type': 'balance_snapshot',
+                'title': 'Check credit and balances',
+                'message': 'Review your current available limit, outstanding balance, and recent ledger movement from one screen.',
+                'action_label': 'Open credit',
+                'route': 'credit',
+                'confidence': 0.8,
+                'source': 'backend',
+            })
+
+        return Response({'cards': cards[:4], 'engine': 'heuristic-v1', 'source': 'backend'})
