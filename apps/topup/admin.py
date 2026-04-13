@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import BulkTopupBatch, BulkTopupItem, CustomerReminder, FavoriteNumber, ScheduledTopup, TopUpTransaction
+from .models import BulkTopupBatch, BulkTopupItem, CommissionRule, CustomerReminder, FavoriteNumber, ScheduledTopup, TopUpTransaction
 
 
 @admin.register(FavoriteNumber)
@@ -10,7 +10,7 @@ class FavoriteNumberAdmin(admin.ModelAdmin):
 
 @admin.register(TopUpTransaction)
 class TopUpTransactionAdmin(admin.ModelAdmin):
-    list_display = ("profile", "mobile_number", "network", "amount", "provider", "status", "created_at")
+    list_display = ("profile", "mobile_number", "network", "amount", "agent_profit", "platform_profit", "provider", "status", "created_at")
     list_filter = ("status", "network", "provider")
     search_fields = ("mobile_number", "provider_reference")
 
@@ -41,3 +41,10 @@ class CustomerReminderAdmin(admin.ModelAdmin):
     list_display = ("profile", "mobile_number", "label", "preferred_amount", "reminder_at", "reminder_type", "status")
     list_filter = ("status", "reminder_type", "network")
     search_fields = ("mobile_number", "label", "note")
+
+
+@admin.register(CommissionRule)
+class CommissionRuleAdmin(admin.ModelAdmin):
+    list_display = ("name", "scope", "provider", "profile", "network", "agent_percent", "platform_percent", "is_active", "priority")
+    list_filter = ("scope", "is_active", "provider")
+    search_fields = ("name", "network")

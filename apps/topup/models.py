@@ -26,6 +26,10 @@ class TopUpTransaction(TimeStampedModel, UUIDModel):
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     commission_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     commission_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    provider_cost = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    agent_profit = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    platform_profit = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    platform_commission_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     provider = models.ForeignKey(TopUpProvider, null=True, blank=True, on_delete=models.SET_NULL, related_name="transactions")
     provider_reference = models.CharField(max_length=120, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
@@ -37,6 +41,31 @@ class TopUpTransaction(TimeStampedModel, UUIDModel):
 
     def __str__(self):
         return f"{self.profile.unique_shop_id} - {self.mobile_number} - {self.amount}"
+
+
+class CommissionRule(TimeStampedModel):
+    SCOPE_CHOICES = [
+        ("default", "Default"),
+        ("provider", "Provider"),
+        ("network", "Network"),
+        ("profile", "Profile"),
+    ]
+
+    name = models.CharField(max_length=120)
+    scope = models.CharField(max_length=20, choices=SCOPE_CHOICES, default="default")
+    provider = models.ForeignKey(TopUpProvider, null=True, blank=True, on_delete=models.CASCADE, related_name="commission_rules")
+    profile = models.ForeignKey(ShopkeeperProfile, null=True, blank=True, on_delete=models.CASCADE, related_name="commission_rules")
+    network = models.CharField(max_length=50, blank=True)
+    agent_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    platform_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    is_active = models.BooleanField(default=True)
+    priority = models.PositiveIntegerField(default=1)
+
+    class Meta:
+        ordering = ["scope", "-priority", "name"]
+
+    def __str__(self):
+        return self.name
 
 
 class ScheduledTopup(TimeStampedModel, UUIDModel):

@@ -4,6 +4,10 @@ from .views import (
     BulkTopupCreateView,
     CustomerReminderDetailView,
     AiSuggestionsView,
+    ProfitSummaryView,
+    ProfitByOperatorView,
+    ProfitTransactionsView,
+    CommissionRuleListView,
     CustomerReminderListCreateView,
     FavoriteNumberDetailView,
     FavoriteNumberListCreateView,
@@ -18,6 +22,10 @@ from .views import (
 
 urlpatterns = [
     path("ai/suggestions/", AiSuggestionsView.as_view(), name="ai-suggestions"),
+    path("profit/summary/", ProfitSummaryView.as_view(), name="profit-summary"),
+    path("profit/by-operator/", ProfitByOperatorView.as_view(), name="profit-by-operator"),
+    path("profit/transactions/", ProfitTransactionsView.as_view(), name="profit-transactions"),
+    path("profit/commission-rules/", CommissionRuleListView.as_view(), name="commission-rules"),
     path("favorites/", FavoriteNumberListCreateView.as_view(), name="favorite-number-list-create"),
     path("favorites/<int:pk>/", FavoriteNumberDetailView.as_view(), name="favorite-number-detail"),
     path("transactions/", TransactionListView.as_view(), name="transaction-list"),

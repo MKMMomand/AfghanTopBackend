@@ -1,7 +1,7 @@
 from decimal import Decimal
 from rest_framework import serializers
 from apps.common.utils import normalize_afghan_mobile
-from .models import BulkTopupBatch, BulkTopupItem, CustomerReminder, FavoriteNumber, ScheduledTopup, TopUpTransaction
+from .models import BulkTopupBatch, BulkTopupItem, CommissionRule, CustomerReminder, FavoriteNumber, ScheduledTopup, TopUpTransaction
 
 
 class FavoriteNumberSerializer(serializers.ModelSerializer):
@@ -30,6 +30,7 @@ class TopUpTransactionSerializer(serializers.ModelSerializer):
         model = TopUpTransaction
         fields = [
             "id", "uuid", "mobile_number", "network", "amount", "commission_percent", "commission_amount",
+            "provider_cost", "agent_profit", "platform_profit", "platform_commission_percent",
             "provider", "provider_name", "provider_reference", "status", "message", "created_at",
         ]
         read_only_fields = ["commission_percent", "commission_amount", "provider", "provider_reference", "status", "message"]
@@ -137,3 +138,14 @@ class CustomerReminderSerializer(serializers.ModelSerializer):
         if value <= Decimal("0"):
             raise serializers.ValidationError("Amount must be greater than 0 AFN.")
         return value
+
+
+class CommissionRuleSerializer(serializers.ModelSerializer):
+    provider_name = serializers.CharField(source="provider.name", read_only=True)
+
+    class Meta:
+        model = CommissionRule
+        fields = [
+            "id", "name", "scope", "provider", "provider_name", "profile", "network",
+            "agent_percent", "platform_percent", "is_active", "priority", "created_at",
+        ]

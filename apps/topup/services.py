@@ -9,7 +9,7 @@ from apps.providers.services import ProviderRouter
 from apps.settlements.services import record_topup_debit
 from apps.shopkeepers.models import AccountAuditLog, ServiceAccess
 
-from .models import BulkTopupBatch, BulkTopupItem, ScheduledTopup, TopUpTransaction
+from .models import BulkTopupBatch, BulkTopupItem, CommissionRule, ScheduledTopup, TopUpTransaction
 
 
 def detect_network(mobile_number: str) -> str:
@@ -34,6 +34,44 @@ def detect_network(mobile_number: str) -> str:
 def _get_topup_access(profile):
     access, _ = ServiceAccess.objects.get_or_create(profile=profile, service_code="topup")
     return access
+
+
+def _get_commission_breakdown(profile, provider, network, amount: Decimal, *, is_success: bool):
+    if not is_success:
+        return {
+            "agent_percent": Decimal("0"),
+            "platform_percent": Decimal("0"),
+            "agent_profit": Decimal("0"),
+            "platform_profit": Decimal("0"),
+            "provider_cost": Decimal("0"),
+        }
+
+    rules = CommissionRule.objects.filter(is_active=True)
+    profile_rule = rules.filter(scope="profile", profile=profile).order_by('-priority').first()
+    provider_rule = rules.filter(scope="provider", provider=provider).order_by('-priority').first()
+    network_rule = rules.filter(scope="network", network__iexact=network or '').order_by('-priority').first()
+    default_rule = rules.filter(scope="default").order_by('-priority').first()
+    rule = profile_rule or provider_rule or network_rule or default_rule
+
+    agent_percent = Decimal(str(provider.commission_percent or 0))
+    platform_percent = Decimal("0")
+    if rule is not None:
+        agent_percent = Decimal(str(rule.agent_percent or 0))
+        platform_percent = Decimal(str(rule.platform_percent or 0))
+
+    agent_profit = (amount * agent_percent) / Decimal("100")
+    platform_profit = (amount * platform_percent) / Decimal("100")
+    provider_cost = amount - agent_profit - platform_profit
+    if provider_cost < 0:
+        provider_cost = Decimal("0")
+
+    return {
+        "agent_percent": agent_percent,
+        "platform_percent": platform_percent,
+        "agent_profit": agent_profit,
+        "platform_profit": platform_profit,
+        "provider_cost": provider_cost,
+    }
 
 
 def _validate_provider_rules(provider, amount: Decimal):
@@ -83,15 +121,18 @@ def execute_topup(profile, mobile_number, amount, network=None):
         status_value = response.get("status")
 
         if status_value in {"success", "pending"}:
-            commission_percent = selected_provider.commission_percent if status_value == "success" else Decimal("0")
-            commission_amount = (amount * commission_percent) / Decimal("100") if status_value == "success" else Decimal("0")
+            breakdown = _get_commission_breakdown(profile, selected_provider, network, amount, is_success=status_value == "success")
             tx = TopUpTransaction.objects.create(
                 profile=profile,
                 mobile_number=mobile_number,
                 network=network,
                 amount=amount,
-                commission_percent=commission_percent,
-                commission_amount=commission_amount,
+                commission_percent=breakdown["agent_percent"],
+                commission_amount=breakdown["agent_profit"],
+                provider_cost=breakdown["provider_cost"],
+                agent_profit=breakdown["agent_profit"],
+                platform_profit=breakdown["platform_profit"],
+                platform_commission_percent=breakdown["platform_percent"],
                 provider=selected_provider,
                 provider_reference=response.get("provider_reference", ""),
                 status="success" if status_value == "success" else "pending",
@@ -119,8 +160,12 @@ def execute_topup(profile, mobile_number, amount, network=None):
         mobile_number=mobile_number,
         network=network,
         amount=amount,
-        commission_percent=selected_provider.commission_percent,
+        commission_percent=Decimal("0"),
         commission_amount=Decimal("0"),
+        provider_cost=Decimal("0"),
+        agent_profit=Decimal("0"),
+        platform_profit=Decimal("0"),
+        platform_commission_percent=Decimal("0"),
         provider=selected_provider,
         provider_reference=response.get("provider_reference", ""),
         status="failed",
@@ -144,9 +189,16 @@ def refresh_transaction_status(tx: TopUpTransaction):
             tx.message = "Top-up provider marked the order successful, but available credit is not enough to settle it. Please review manually."
             tx.save(update_fields=["message", "updated_at"])
             return tx
+        breakdown = _get_commission_breakdown(profile, tx.provider, tx.network, tx.amount, is_success=True)
         tx.status = "success"
         tx.message = result.get("message", tx.message)
-        tx.save(update_fields=["status", "message", "updated_at"])
+        tx.commission_percent = breakdown["agent_percent"]
+        tx.commission_amount = breakdown["agent_profit"]
+        tx.provider_cost = breakdown["provider_cost"]
+        tx.agent_profit = breakdown["agent_profit"]
+        tx.platform_profit = breakdown["platform_profit"]
+        tx.platform_commission_percent = breakdown["platform_percent"]
+        tx.save(update_fields=["status", "message", "commission_percent", "commission_amount", "provider_cost", "agent_profit", "platform_profit", "platform_commission_percent", "updated_at"])
         record_topup_debit(profile, tx, service_code="topup")
         access.used_credit = (access.used_credit or Decimal("0")) + tx.amount
         access.next_due_date = access.next_due_date or (timezone.now() + timedelta(days=access.due_days or 7))

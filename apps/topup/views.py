@@ -1,4 +1,4 @@
-from django.db.models import Q
+from django.db.models import Q, Sum, Count
 from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.decorators import api_view, permission_classes
@@ -9,7 +9,7 @@ from apps.accounts.permissions import IsApprovedReseller
 from apps.providers.models import TopUpProvider
 from apps.shopkeepers.models import ShopkeeperProfile
 
-from .models import BulkTopupBatch, CustomerReminder, FavoriteNumber, ScheduledTopup, TopUpTransaction
+from .models import BulkTopupBatch, CommissionRule, CustomerReminder, FavoriteNumber, ScheduledTopup, TopUpTransaction
 from .serializers import (
     BulkTopupBatchSerializer,
     BulkTopupCreateSerializer,
@@ -19,6 +19,7 @@ from .serializers import (
     ScheduledTopupUpdateSerializer,
     TopUpCreateSerializer,
     TopUpTransactionSerializer,
+    CommissionRuleSerializer,
 )
 from .ai_service import AiContext, AiServiceError, OpenAISuggestionsService
 from .services import (
@@ -358,3 +359,91 @@ class AiSuggestionsView(ShopkeeperProfileMixin, APIView):
             })
 
         return Response({'cards': cards[:4], 'engine': 'heuristic-v1', 'source': 'backend'})
+
+
+class ProfitSummaryView(ShopkeeperProfileMixin, APIView):
+    permission_classes = [IsApprovedReseller]
+
+    def get(self, request):
+        profile = self.get_profile()
+        now = timezone.now()
+        today = now.date()
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        week_start = now - timezone.timedelta(days=6)
+        base_qs = TopUpTransaction.objects.filter(profile=profile, status="success")
+
+        def aggregate(qs):
+            values = qs.aggregate(
+                sales=Sum('amount'),
+                agent_profit=Sum('agent_profit'),
+                platform_profit=Sum('platform_profit'),
+                provider_cost=Sum('provider_cost'),
+                count=Count('id'),
+            )
+            return {k: values.get(k) or 0 for k in values}
+
+        today_data = aggregate(base_qs.filter(created_at__date=today))
+        week_data = aggregate(base_qs.filter(created_at__gte=week_start))
+        month_data = aggregate(base_qs.filter(created_at__gte=month_start))
+        total_data = aggregate(base_qs)
+        return Response({
+            'today_sales': today_data['sales'],
+            'today_profit': today_data['agent_profit'],
+            'today_platform_profit': today_data['platform_profit'],
+            'today_transactions': today_data['count'],
+            'week_sales': week_data['sales'],
+            'week_profit': week_data['agent_profit'],
+            'week_transactions': week_data['count'],
+            'month_sales': month_data['sales'],
+            'month_profit': month_data['agent_profit'],
+            'month_platform_profit': month_data['platform_profit'],
+            'month_provider_cost': month_data['provider_cost'],
+            'month_transactions': month_data['count'],
+            'total_sales': total_data['sales'],
+            'total_profit': total_data['agent_profit'],
+            'total_transactions': total_data['count'],
+            'is_cached': False,
+        })
+
+
+class ProfitByOperatorView(ShopkeeperProfileMixin, APIView):
+    permission_classes = [IsApprovedReseller]
+
+    def get(self, request):
+        profile = self.get_profile()
+        qs = TopUpTransaction.objects.filter(profile=profile, status='success').values('network').annotate(
+            sales=Sum('amount'),
+            agent_profit=Sum('agent_profit'),
+            platform_profit=Sum('platform_profit'),
+            transactions=Count('id'),
+        ).order_by('-agent_profit', '-sales')
+        return Response([
+            {
+                'network': item['network'] or 'Unknown',
+                'sales': item['sales'] or 0,
+                'profit': item['agent_profit'] or 0,
+                'platform_profit': item['platform_profit'] or 0,
+                'transactions': item['transactions'] or 0,
+            }
+            for item in qs
+        ])
+
+
+class ProfitTransactionsView(ShopkeeperProfileMixin, generics.ListAPIView):
+    serializer_class = TopUpTransactionSerializer
+    permission_classes = [IsApprovedReseller]
+
+    def get_queryset(self):
+        qs = TopUpTransaction.objects.filter(profile=self.get_profile(), status='success').order_by('-created_at')
+        network = (self.request.query_params.get('network') or '').strip()
+        if network and network.lower() != 'all':
+            qs = qs.filter(network__iexact=network)
+        return qs[:100]
+
+
+class CommissionRuleListView(APIView):
+    permission_classes = [IsApprovedReseller]
+
+    def get(self, request):
+        rules = CommissionRule.objects.filter(is_active=True).order_by('scope', '-priority', 'name')
+        return Response(CommissionRuleSerializer(rules, many=True).data)
