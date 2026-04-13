@@ -15,11 +15,17 @@ class FavoriteNumberSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         profile = getattr(self.instance, 'profile', None) or self.context['request'].user.shopkeeper_profile
         mobile_number = attrs.get('mobile_number') or getattr(self.instance, 'mobile_number', '')
-        qs = FavoriteNumber.objects.filter(profile=profile, mobile_number=mobile_number)
+        existing = FavoriteNumber.objects.filter(profile=profile)
         if self.instance:
-            qs = qs.exclude(id=self.instance.id)
-        if qs.exists():
+            existing = existing.exclude(id=self.instance.id)
+
+        duplicate_exists = any(
+            normalize_afghan_mobile(item.mobile_number) == mobile_number
+            for item in existing.only("mobile_number")
+        )
+        if duplicate_exists:
             raise serializers.ValidationError({"mobile_number": "This number is already in your favorites."})
+        attrs["mobile_number"] = mobile_number
         return attrs
 
 

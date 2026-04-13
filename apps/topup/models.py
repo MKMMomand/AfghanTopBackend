@@ -1,6 +1,7 @@
 from django.db import models
 from apps.common.models import TimeStampedModel, UUIDModel
 from apps.shopkeepers.models import ShopkeeperProfile
+from apps.common.utils import normalize_afghan_mobile
 from apps.providers.models import TopUpProvider
 
 
@@ -13,6 +14,10 @@ class FavoriteNumber(TimeStampedModel):
 
     class Meta:
         unique_together = ("profile", "mobile_number")
+
+    def save(self, *args, **kwargs):
+        self.mobile_number = normalize_afghan_mobile(self.mobile_number)
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.profile.unique_shop_id} - {self.mobile_number}"
