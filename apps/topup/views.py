@@ -20,6 +20,7 @@ from .serializers import (
     TopUpCreateSerializer,
     TopUpTransactionSerializer,
 )
+from .ai_service import AiContext, AiServiceError, OpenAISuggestionsService
 from .services import (
     execute_bulk_topup,
     execute_topup,
@@ -226,6 +227,49 @@ class AiSuggestionsView(ShopkeeperProfileMixin, APIView):
         transactions = list(TopUpTransaction.objects.filter(profile=profile).order_by('-created_at')[:80])
         favorites = list(FavoriteNumber.objects.filter(profile=profile).order_by('category', 'label', '-created_at')[:20])
         reminders = list(CustomerReminder.objects.filter(profile=profile).order_by('reminder_at', '-created_at')[:20])
+
+        try:
+            cards = OpenAISuggestionsService().generate_cards(
+                AiContext(
+                    user_identifier=str(request.user.pk),
+                    transactions=[
+                        {
+                            "mobile_number": tx.mobile_number,
+                            "network": tx.network,
+                            "amount": str(tx.amount),
+                            "status": tx.status,
+                            "created_at": tx.created_at.isoformat() if tx.created_at else None,
+                            "message": tx.message,
+                        }
+                        for tx in transactions
+                    ],
+                    favorites=[
+                        {
+                            "mobile_number": fav.mobile_number,
+                            "label": fav.label,
+                            "network": fav.network,
+                            "category": fav.category,
+                            "created_at": fav.created_at.isoformat() if fav.created_at else None,
+                        }
+                        for fav in favorites
+                    ],
+                    reminders=[
+                        {
+                            "mobile_number": reminder.mobile_number,
+                            "label": reminder.label,
+                            "network": reminder.network,
+                            "preferred_amount": str(reminder.preferred_amount),
+                            "status": reminder.status,
+                            "reminder_at": reminder.reminder_at.isoformat() if reminder.reminder_at else None,
+                            "note": reminder.note,
+                        }
+                        for reminder in reminders
+                    ],
+                )
+            )
+            return Response({'cards': cards[:4], 'engine': 'openai', 'source': 'openai'})
+        except AiServiceError:
+            pass
 
         cards = []
 
