@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from decimal import Decimal
 from typing import Any
-from urllib.parse import urlencode
 
 import requests
 
@@ -102,14 +101,25 @@ class SendAfProviderAdapter(BaseProviderAdapter):
             )
             return normalized
         except requests.RequestException as exc:
+            response = getattr(exc, "response", None)
             failure = {
                 "status": "failed",
                 "provider_reference": "",
-                "message": f"Provider request failed: {exc}",
+                "message": self._build_request_error_message("Provider request failed", exc),
                 "network": network,
-                "raw": {"exception": str(exc)},
+                "raw": {
+                    "exception": str(exc),
+                    "status_code": getattr(response, "status_code", None),
+                    "response_text": getattr(response, "text", ""),
+                    "url": getattr(response, "url", ""),
+                },
             }
-            self._log(action="topup", request_payload=request_payload, response_payload=failure, is_success=False)
+            self._log(
+                action="topup",
+                request_payload=request_payload,
+                response_payload=failure,
+                is_success=False,
+            )
             return failure
 
     def wallet_balance(self) -> dict[str, Any]:
@@ -126,10 +136,16 @@ class SendAfProviderAdapter(BaseProviderAdapter):
             self._log(action="wallet", request_payload={}, response_payload=raw, is_success=True)
             return result
         except requests.RequestException as exc:
+            response = getattr(exc, "response", None)
             failure = {
                 "status": "failed",
-                "message": f"Provider wallet request failed: {exc}",
-                "raw": {"exception": str(exc)},
+                "message": self._build_request_error_message("Provider wallet request failed", exc),
+                "raw": {
+                    "exception": str(exc),
+                    "status_code": getattr(response, "status_code", None),
+                    "response_text": getattr(response, "text", ""),
+                    "url": getattr(response, "url", ""),
+                },
             }
             self._log(action="wallet", request_payload={}, response_payload=failure, is_success=False)
             return failure
@@ -148,13 +164,25 @@ class SendAfProviderAdapter(BaseProviderAdapter):
             )
             return normalized
         except requests.RequestException as exc:
+            response = getattr(exc, "response", None)
             failure = {
                 "status": "failed",
                 "provider_reference": order_id,
-                "message": f"Provider order status request failed: {exc}",
-                "raw": {"exception": str(exc)},
+                "message": self._build_request_error_message("Provider order status request failed", exc),
+                "raw": {
+                    "exception": str(exc),
+                    "status_code": getattr(response, "status_code", None),
+                    "response_text": getattr(response, "text", ""),
+                    "url": getattr(response, "url", ""),
+                },
             }
-            self._log(action="order_status", request_payload=request_payload, response_payload=failure, is_success=False, reference=order_id)
+            self._log(
+                action="order_status",
+                request_payload=request_payload,
+                response_payload=failure,
+                is_success=False,
+                reference=order_id,
+            )
             return failure
 
     def _request(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -163,8 +191,23 @@ class SendAfProviderAdapter(BaseProviderAdapter):
         path = cfg.get(f"{action}_path") or action
         base_url = (self.provider.base_url or "https://www.send.af/api").rstrip("/")
         url = f"{base_url}/{str(path).lstrip('/')}"
+
         query = {"token": self.provider.auth_token, **params}
-        response = requests.get(url, params=query, timeout=timeout)
+
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "User-Agent": "AfghanTop/1.0",
+        }
+
+        # IMPORTANT:
+        # Send.af should be called as a GET request with query params only.
+        # Do not send JSON body and do not force Content-Type: application/json.
+        response = requests.get(
+            url,
+            params=query,
+            headers=headers,
+            timeout=timeout,
+        )
         response.raise_for_status()
         return self._safe_payload(response)
 
@@ -172,8 +215,15 @@ class SendAfProviderAdapter(BaseProviderAdapter):
         try:
             payload = response.json()
             if isinstance(payload, dict):
+                payload.setdefault("http_status", response.status_code)
+                payload.setdefault("query", response.url)
                 return payload
-            return {"data": payload, "http_status": response.status_code, "text": response.text}
+            return {
+                "data": payload,
+                "http_status": response.status_code,
+                "text": response.text,
+                "query": response.url,
+            }
         except ValueError:
             text = response.text.strip()
             return {
@@ -190,7 +240,9 @@ class SendAfProviderAdapter(BaseProviderAdapter):
 
     def _normalize_topup(self, raw: dict[str, Any], network: str | None = None) -> dict[str, Any]:
         data = self._extract_payload(raw)
-        code = self._as_code(data.get("code") or data.get("status") or raw.get("code") or raw.get("status"))
+        code = self._as_code(
+            data.get("code") or data.get("status") or raw.get("code") or raw.get("status")
+        )
         provider_reference = str(
             data.get("order_id")
             or data.get("orderId")
@@ -200,9 +252,11 @@ class SendAfProviderAdapter(BaseProviderAdapter):
             or ""
         )
         message = self._resolve_message(code, data.get("message") or raw.get("message"))
+
         status = "pending" if code == "1" else "failed"
         if code in {"success", "ok"}:
             status = "success"
+
         return {
             "status": status,
             "provider_reference": provider_reference,
@@ -214,7 +268,9 @@ class SendAfProviderAdapter(BaseProviderAdapter):
 
     def _normalize_order_status(self, raw: dict[str, Any], order_id: str) -> dict[str, Any]:
         data = self._extract_payload(raw)
-        code = self._as_code(data.get("code") or data.get("status") or raw.get("code") or raw.get("status"))
+        code = self._as_code(
+            data.get("code") or data.get("status") or raw.get("code") or raw.get("status")
+        )
         message = self._resolve_message(code, data.get("message") or raw.get("message"))
         provider_reference = str(data.get("order_id") or raw.get("order_id") or order_id)
 
@@ -264,12 +320,30 @@ class SendAfProviderAdapter(BaseProviderAdapter):
         return digits or stripped
 
     def _format_phone(self, value: str) -> str:
-        compact = str(value).replace("+93", "0").replace("93", "0")
-        compact = compact.replace(" ", "")
+        compact = str(value).strip().replace(" ", "")
+        if compact.startswith("+93"):
+            compact = "0" + compact[3:]
+        elif compact.startswith("93"):
+            compact = "0" + compact[2:]
         return compact
 
     def _format_amount(self, amount: Decimal) -> str:
-        return str(int(amount)) if amount == int(amount) else str(amount)
+        try:
+            amount_decimal = Decimal(amount)
+            if amount_decimal == amount_decimal.to_integral_value():
+                return str(int(amount_decimal))
+            return format(amount_decimal.normalize(), "f")
+        except Exception:
+            return str(amount)
+
+    def _build_request_error_message(self, prefix: str, exc: requests.RequestException) -> str:
+        response = getattr(exc, "response", None)
+        if response is not None:
+            text = (response.text or "").strip()
+            if text:
+                return f"{prefix}: {response.status_code} {response.reason}. Response: {text}"
+            return f"{prefix}: {response.status_code} {response.reason}"
+        return f"{prefix}: {exc}"
 
 
 class GenericHttpProviderAdapter(BaseProviderAdapter):
@@ -289,17 +363,22 @@ class GenericHttpProviderAdapter(BaseProviderAdapter):
         method = str(cfg.get("method", "POST")).upper()
         path = str(cfg.get("topup_path", "")).lstrip("/")
         url = f"{self.provider.base_url.rstrip('/')}/{path}" if path else self.provider.base_url
-        headers = {"Content-Type": "application/json", **(cfg.get("headers") or {})}
+
+        headers = dict(cfg.get("headers") or {})
         auth_header = cfg.get("auth_header")
         if auth_header and self.provider.auth_token:
             prefix = str(cfg.get("auth_prefix", "")).strip()
             token_value = f"{prefix} {self.provider.auth_token}".strip()
             headers[auth_header] = token_value
+
         try:
             if method == "GET":
                 resp = requests.get(url, params=request_payload, headers=headers, timeout=timeout)
             else:
+                headers.setdefault("Content-Type", "application/json")
                 resp = requests.post(url, json=request_payload, headers=headers, timeout=timeout)
+
+            resp.raise_for_status()
             raw = self._safe_json(resp)
             normalized = self._normalize_response(raw)
             self._log(
@@ -311,11 +390,18 @@ class GenericHttpProviderAdapter(BaseProviderAdapter):
             )
             return normalized
         except requests.RequestException as exc:
+            response = getattr(exc, "response", None)
             failure = {
                 "status": "failed",
                 "provider_reference": "",
                 "message": f"Provider request failed: {exc}",
                 "network": network,
+                "raw": {
+                    "exception": str(exc),
+                    "status_code": getattr(response, "status_code", None),
+                    "response_text": getattr(response, "text", ""),
+                    "url": getattr(response, "url", ""),
+                },
             }
             self._log(action="topup", request_payload=request_payload, response_payload=failure, is_success=False)
             return failure
@@ -349,6 +435,15 @@ class GenericHttpProviderAdapter(BaseProviderAdapter):
     def _safe_json(self, response: requests.Response) -> dict[str, Any]:
         try:
             payload = response.json()
-            return payload if isinstance(payload, dict) else {"data": payload, "status": response.status_code}
+            return payload if isinstance(payload, dict) else {
+                "data": payload,
+                "status": response.status_code,
+                "query": response.url,
+            }
         except ValueError:
-            return {"status": response.status_code, "message": response.text, "text": response.text, "query": response.url}
+            return {
+                "status": response.status_code,
+                "message": response.text,
+                "text": response.text,
+                "query": response.url,
+            }
