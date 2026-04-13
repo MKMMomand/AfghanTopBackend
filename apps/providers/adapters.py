@@ -89,7 +89,6 @@ class SendAfProviderAdapter(BaseProviderAdapter):
         request_payload = {
             "phone": self._format_phone(mobile_number),
             "amount": self._format_amount(amount),
-            "network": network or "",
         }
         try:
             raw = self._request("topup", request_payload)
